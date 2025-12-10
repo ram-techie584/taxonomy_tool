@@ -13,3 +13,5 @@ staticfiles/
 
 # VS Code
 .vscode/
+output/
+*.xlsx

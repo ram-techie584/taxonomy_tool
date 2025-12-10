@@ -1,6 +1,6 @@
 # taxonomy_ui/models.py
-
 from django.db import models
+
 
 class PartMaster(models.Model):
     part_number = models.CharField(max_length=100)
@@ -20,8 +20,8 @@ class PartMaster(models.Model):
     source_file = models.CharField(max_length=255, blank=True, null=True)
 
     class Meta:
-        db_table = "part_master"
+        db_table = "part_master"          # <- Django must use this table name
         ordering = ["part_number"]
 
     def __str__(self):
-        return self.part_number
+        return f"{self.part_number} - {self.description or ''}"

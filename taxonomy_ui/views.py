@@ -17,10 +17,7 @@ from taxonomy_ui.stage2_adapter import run_stage2_from_django
 # Path to background_stage1.py
 STAGE1_SCRIPT = os.path.join(settings.BASE_DIR, "background_stage1.py")
 
-
-# ----------------------------------------------------------
-# Column list for checkbox UI
-# ----------------------------------------------------------
+# Column list for checkbox UI (Stage 2)
 COLUMN_CHOICES = [
     "part_number", "updated_at", "stock_qty", "vendor_code", "abc_class",
     "commodity_code", "utilization_score", "material_group", "risk_rating",
@@ -46,29 +43,55 @@ def home(request):
 
 
 # ----------------------------------------------------------
-# Stage 1 DB parts view
+# Stage 1 DB parts view  (NO pandas, pure ORM)
 # ----------------------------------------------------------
 def part_list(request):
-    parts = PartMaster.objects.all().values()
-    df = pd.DataFrame(parts)
+    """
+    Display Part Master data from DB using Django ORM.
+    """
 
-    if df.empty:
-        rows = []
-        columns = []
-    else:
-        if "sources" in df.columns:
-            df["sources"] = df["sources"].astype(str).str.replace(",", ",\n")
+    parts = PartMaster.objects.all()
 
-        rows = df.to_dict(orient="records")
-        columns = list(df.columns)
+    columns = [
+        "id",
+        "part_number",
+        "updated_at",
+        "dimensions",
+        "description",
+        "cost",
+        "material",
+        "vendor_name",
+        "currency",
+        "category_raw",
+        "category_master",
+        "source_system",
+        "source_file",
+    ]
+
+    rows = []
+    for p in parts:
+        rows.append(
+            {
+                "id": p.id,
+                "part_number": p.part_number,
+                "updated_at": p.updated_at,
+                "dimensions": p.dimensions,
+                "description": p.description,
+                "cost": p.cost,
+                "material": p.material,
+                "vendor_name": p.vendor_name,
+                "currency": p.currency,
+                "category_raw": p.category_raw,
+                "category_master": p.category_master,
+                "source_system": p.source_system,
+                "source_file": p.source_file,
+            }
+        )
 
     return render(
         request,
         "taxonomy_ui/parts_list.html",
-        {
-            "columns": columns,
-            "rows": rows,
-        },
+        {"columns": columns, "rows": rows},
     )
 
 
@@ -80,7 +103,6 @@ def upload_and_process(request):
     Upload user file(s), run Stage 2, show preview, and enable downloads.
     """
 
-    # ✅ ALWAYS define variables first
     df = None
     has_df = False
     download_link = None
@@ -88,9 +110,6 @@ def upload_and_process(request):
     all_columns = COLUMN_CHOICES
     error = None
 
-    # -----------------------
-    # GET REQUEST
-    # -----------------------
     if request.method == "GET":
         return render(
             request,
@@ -105,9 +124,7 @@ def upload_and_process(request):
             },
         )
 
-    # -----------------------
-    # POST REQUEST
-    # -----------------------
+    # POST
     uploaded_files = request.FILES.getlist("files")
 
     if not uploaded_files:
@@ -126,10 +143,10 @@ def upload_and_process(request):
         )
 
     try:
-        # ✅ Run Stage 2
+        # Run Stage 2
         output_bytes, filename = run_stage2_from_django(uploaded_files)
 
-        # ✅ Save file
+        # Save full output to MEDIA_ROOT/output/
         output_dir = os.path.join(settings.MEDIA_ROOT, "output")
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(output_dir, filename)
@@ -140,7 +157,7 @@ def upload_and_process(request):
         download_link = f"/download-full/{filename}/"
         output_filename = filename
 
-        # ✅ Load preview DataFrame
+        # Preview: load into DataFrame
         df = pd.read_excel(io.BytesIO(output_bytes))
 
         if "sources" in df.columns:
@@ -153,9 +170,6 @@ def upload_and_process(request):
         df = None
         has_df = False
 
-    # -----------------------
-    # FINAL RENDER
-    # -----------------------
     return render(
         request,
         "taxonomy_ui/upload.html",
@@ -168,6 +182,7 @@ def upload_and_process(request):
             "error": error,
         },
     )
+
 
 # ----------------------------------------------------------
 # FULL OUTPUT DOWNLOAD
@@ -183,7 +198,10 @@ def download_full_output(request, filename):
 
     response = HttpResponse(
         data,
-        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        content_type=(
+            "application/"
+            "vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
     )
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
@@ -218,7 +236,10 @@ def download_selected_columns(request):
 
     response = HttpResponse(
         buffer.getvalue(),
-        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        content_type=(
+            "application/"
+            "vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
     )
     response["Content-Disposition"] = (
         f'attachment; filename="selected_{output_filename}"'
@@ -232,8 +253,7 @@ def download_selected_columns(request):
 def run_stage1_refresh(request):
     if request.method != "POST":
         return JsonResponse(
-            {"status": "error", "message": "Invalid method"},
-            status=405,
+            {"status": "error", "message": "Invalid method"}, status=405
         )
 
     try:
@@ -241,6 +261,5 @@ def run_stage1_refresh(request):
         return JsonResponse({"status": "ok", "message": "Stage 1 started"})
     except Exception as e:
         return JsonResponse(
-            {"status": "error", "message": str(e)},
-            status=500,
+            {"status": "error", "message": str(e)}, status=500
         )
