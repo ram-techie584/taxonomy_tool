@@ -1,0 +1,22 @@
+{% load dict_extras %}
+
+<h2>Part Master Data</h2>
+
+<table border="1" cellspacing="0" cellpadding="5">
+    <thead>
+        <tr>
+            {% for col in columns %}
+                <th>{{ col }}</th>
+            {% endfor %}
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+            <tr>
+                {% for col in columns %}
+                    <td>{{ row|get_value:col }}</td>
+                {% endfor %}
+            </tr>
+        {% endfor %}
+    </tbody>
+</table>

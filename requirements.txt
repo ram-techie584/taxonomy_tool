@@ -1,0 +1,17 @@
+Django==5.2.9
+gunicorn
+dj-database-url
+whitenoise
+psycopg2-binary
+
+pandas
+numpy
+openpyxl
+xlsxwriter
+pytesseract
+Pillow
+opencv-python
+pdf2image
+PyMuPDF
+tqdm
+python-dateutil
