@@ -81,7 +81,7 @@ def part_list(request):
 def upload_and_process(request):
     context = {
         "has_df": False,
-        "all_columns": COLUMN_CHOICES,
+        "all_columns": COLUMN_CHOICES,   # default for initial GET
     }
 
     if request.method == "GET":
@@ -93,8 +93,10 @@ def upload_and_process(request):
         return render(request, "taxonomy_ui/upload.html", context)
 
     try:
+        # run Stage-2 (now dynamic DB version)
         output_bytes, filename = run_stage2_from_django(uploaded_files)
 
+        # save output file
         output_dir = os.path.join(settings.MEDIA_ROOT, "output")
         os.makedirs(output_dir, exist_ok=True)
 
@@ -102,11 +104,8 @@ def upload_and_process(request):
         with open(output_path, "wb") as f:
             f.write(output_bytes)
 
-        # Load DataFrame safely
-        if filename.lower().endswith(".csv"):
-            df = pd.read_csv(io.BytesIO(output_bytes))
-        else:
-            df = pd.read_excel(io.BytesIO(output_bytes))
+        # load preview from bytes (Excel)
+        df = pd.read_excel(io.BytesIO(output_bytes))
 
         context.update({
             "has_df": not df.empty,
@@ -114,12 +113,15 @@ def upload_and_process(request):
             "output_filename": filename,
             "preview_columns": list(df.columns),
             "preview_rows": df.head(50).values.tolist(),
+            # 👇 IMPORTANT: override COLUMN_CHOICES with real columns
+            "all_columns": list(df.columns),
         })
 
     except Exception as e:
         context["error"] = str(e)
 
     return render(request, "taxonomy_ui/upload.html", context)
+
 
 
 # ----------------------------------------------------------
