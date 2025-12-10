@@ -1,88 +1,112 @@
 # background_stage1.py
 """
-Stage 1: Background ingestion of SAP / Vault / PowerBI / PO / Invoice
-→ Cleansing → Merging by part_number → Upsert into ONE flat table part_master.
+Stage 1 loader for Render + local.
+
+Reads output/stage1_master_snapshot.xlsx and populates the PartMaster table
+using Django ORM (Postgres on Render, SQLite locally).
 """
 
 import os
-from collections import defaultdict
+from pathlib import Path
 
 import pandas as pd
 
-from config import SOURCES_DIRS, OUTPUT_DIR
-from ingestion_utils import load_file
-from cleansing import cleanup_pipeline
-from enrichment_text import enrich_from_description
-#from merge_logic import merge_records_for_part
-from db import init_db, upsert_part_master
+# --------------------------------------------------------------------
+# 1. Bootstrap Django
+# --------------------------------------------------------------------
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "taxonomy_portal.settings")
+
+import django  # noqa: E402
+django.setup()
+
+from django.db import transaction  # noqa: E402
+from taxonomy_ui.models import PartMaster  # noqa: E402
 
 
-def load_all_sources() -> pd.DataFrame:
-    all_rows = []
-    for system, folder in SOURCES_DIRS.items():
-        if not os.path.isdir(folder):
-            continue
-        for fname in os.listdir(folder):
-            path = os.path.join(folder, fname)
-            print(f"📄 [{system}] Processing: {path}")
-            df = load_file(path)
-            if df is None or df.empty:
-                continue
-            df["source_system"] = system
-            df["source_file"] = fname
-            all_rows.append(df)
-    if not all_rows:
-        return pd.DataFrame()
-    return pd.concat(all_rows, ignore_index=True)
+# --------------------------------------------------------------------
+# 2. Paths
+# --------------------------------------------------------------------
+BASE_DIR = Path(__file__).resolve().parent
+SNAPSHOT_PATH = BASE_DIR / "output" / "stage1_master_snapshot.xlsx"
 
 
-def clean_pipeline(df: pd.DataFrame) -> pd.DataFrame:
-    df = cleanup_pipeline(df)
-    df = enrich_from_description(df)
-    return df
+# --------------------------------------------------------------------
+# 3. Helpers
+# --------------------------------------------------------------------
+def safe_val(val):
+    """Convert pandas NaN to None (Postgres safe)."""
+    if pd.isna(val):
+        return None
+    return val
 
 
-from merge_logic import merge_records_by_part_number
+# --------------------------------------------------------------------
+# 4. Main Loader
+# --------------------------------------------------------------------
+def load_part_master_from_snapshot():
+    if not SNAPSHOT_PATH.exists():
+        print(f"[Stage1] ❌ Snapshot file not found: {SNAPSHOT_PATH}")
+        return
 
-def run_stage1():
-    print("🚀 Stage 1: Background Ingestion Started\n")
+    print(f"[Stage1] ✅ Loading snapshot from: {SNAPSHOT_PATH}")
 
-    init_db()
+    df = pd.read_excel(SNAPSHOT_PATH)
 
-    df_raw = load_all_sources()
-    print(f"📊 Raw rows loaded: {len(df_raw)}")
+    if df.empty:
+        print("[Stage1] ⚠️ Snapshot is empty. No rows to load.")
+        return
 
-    df_clean = clean_pipeline(df_raw)
+    print(f"[Stage1] Rows in snapshot: {len(df)}")
 
-    # Convert to records
-    records = df_clean.to_dict(orient="records")
+    required_cols = [
+        "part_number",
+        "dimensions",
+        "description",
+        "cost",
+        "material",
+        "vendor_name",
+        "currency",
+        "category_raw",
+        "category_master",
+        "source_system",
+        "source_file",
+    ]
 
-    # Group by part number
-    grouped = {}
-    for r in records:
-        pn = r.get("part_number")
-        if not pn:
-            continue
-        grouped.setdefault(pn, []).append(r)
+    for col in required_cols:
+        if col not in df.columns:
+            df[col] = None
 
-    # Merge rows for each part
-    merged_records = []
-    for pn, rows in grouped.items():
-        merged = merge_records_by_part_number(rows)
-        merged_records.append(merged)
+    objects = []
 
-    print(f"📊 Unique merged part_numbers: {len(merged_records)}")
+    for _, row in df.iterrows():
+        objects.append(
+            PartMaster(
+                part_number=str(safe_val(row.get("part_number")) or "").strip(),
+                dimensions=safe_val(row.get("dimensions")),
+                description=safe_val(row.get("description")),
+                cost=str(safe_val(row.get("cost"))) if safe_val(row.get("cost")) else None,
+                material=safe_val(row.get("material")),
+                vendor_name=safe_val(row.get("vendor_name")),
+                currency=safe_val(row.get("currency")),
+                category_raw=safe_val(row.get("category_raw")),
+                category_master=safe_val(row.get("category_master")),
+                source_system=safe_val(row.get("source_system")),
+                source_file=safe_val(row.get("source_file")),
+            )
+        )
 
-    # Upsert
-    upsert_part_master(merged_records)
+    with transaction.atomic():
+        deleted_count, _ = PartMaster.objects.all().delete()
+        print(f"[Stage1] 🧹 Deleted {deleted_count} existing rows")
+
+        PartMaster.objects.bulk_create(objects, batch_size=500)
+        print(f"[Stage1] ✅ Inserted {len(objects)} rows into part_master")
+
+    print("[Stage1] 🎉 Stage-1 completed successfully")
 
 
-    # Save snapshot for inspection
-    snapshot_path = os.path.join(OUTPUT_DIR, "stage1_master_snapshot.xlsx")
-    pd.DataFrame(merged_records).to_excel(snapshot_path, index=False)
-    print(f"📂 Snapshot saved to: {snapshot_path}")
-    print("✅ Stage 1 complete.")
-
-
+# --------------------------------------------------------------------
+# 5. Entry Point
+# --------------------------------------------------------------------
 if __name__ == "__main__":
-    run_stage1()
+    load_part_master_from_snapshot()

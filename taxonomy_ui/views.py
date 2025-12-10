@@ -42,9 +42,10 @@ COLUMN_CHOICES = [
 # ----------------------------------------------------------
 # HOME
 # ----------------------------------------------------------
-
+from django.shortcuts import redirect
 def home(request):
-    return render(request, "taxonomy_ui/home.html")
+    return redirect("taxonomy_ui:upload_and_process")
+
 
 
 # ----------------------------------------------------------
