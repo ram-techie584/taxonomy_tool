@@ -4,13 +4,12 @@ import os
 import io
 import sys
 import subprocess
-import pandas as pd
 
+import pandas as pd
 from django.conf import settings
 from django.http import HttpResponse, JsonResponse
-from django.shortcuts import render, redirect
+from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
-from django.db import connection
 
 from .models import PartMaster
 from taxonomy_ui.stage2_adapter import run_stage2_from_django
@@ -22,33 +21,31 @@ from taxonomy_ui.stage2_adapter import run_stage2_from_django
 
 STAGE1_SCRIPT = os.path.join(settings.BASE_DIR, "background_stage1.py")
 
-
-# ----------------------------------------------------------
-# HELPERS
-# ----------------------------------------------------------
-
-def get_part_master_columns():
-    """
-    ✅ SINGLE SOURCE OF TRUTH for UI checkboxes
-    Reads actual DB schema (dynamic columns)
-    """
-    with connection.cursor() as cur:
-        cur.execute("""
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_name = 'part_master'
-              AND column_name NOT IN ('id')
-            ORDER BY column_name;
-        """)
-        return [r[0] for r in cur.fetchall()]
+COLUMN_CHOICES = [
+    "part_number", "updated_at", "stock_qty", "vendor_code", "abc_class",
+    "commodity_code", "utilization_score", "material_group", "risk_rating",
+    "cost", "purchase_uom", "notes", "description_clean", "drawing_no",
+    "is_standard_part", "order_uom", "spec_grade", "spec_finish", "material",
+    "dimensions", "last_modified", "description", "category_master",
+    "analysis_comment", "created_date", "plant", "currency", "flag",
+    "checkout_status", "remarks", "approval_status", "revision_no",
+    "material_type", "avg_lead_time_days", "spec_weight", "no", "cad_type",
+    "storage_location", "quantity", "criticality_index", "category_raw",
+    "engineer_name", "active_flag", "file_size_mb", "valuation_type",
+    "spec_tolerance", "movement_frequency", "order_date", "delivery_date",
+    "pdf_page", "date", "due_date", "file_name", "sources",
+    "lifecycle_state", "vendor_name", "cad_file",
+    "source_system", "source_file",
+]
 
 
 # ----------------------------------------------------------
 # HOME
 # ----------------------------------------------------------
-
+from django.shortcuts import redirect
 def home(request):
     return redirect("taxonomy_ui:upload_and_process")
+
 
 
 # ----------------------------------------------------------
@@ -56,23 +53,24 @@ def home(request):
 # ----------------------------------------------------------
 
 def part_list(request):
-    qs = PartMaster.objects.all().values()
-    df = pd.DataFrame(list(qs))
+    parts = PartMaster.objects.all().order_by("id")
 
-    if df.empty:
-        return render(
-            request,
-            "taxonomy_ui/parts_list.html",
-            {"columns": [], "rows": []},
-        )
+    columns = [
+        "id", "part_number", "updated_at", "dimensions", "description",
+        "cost", "material", "vendor_name", "currency",
+        "category_raw", "category_master",
+        "source_system", "source_file",
+    ]
+
+    rows = [
+        {col: getattr(p, col, "") for col in columns}
+        for p in parts
+    ]
 
     return render(
         request,
         "taxonomy_ui/parts_list.html",
-        {
-            "columns": df.columns.tolist(),
-            "rows": df.to_dict(orient="records"),
-        },
+        {"columns": columns, "rows": rows},
     )
 
 
@@ -81,61 +79,53 @@ def part_list(request):
 # ----------------------------------------------------------
 
 def upload_and_process(request):
+    context = {
+        "has_df": False,
+        "all_columns": COLUMN_CHOICES,   # default for initial GET
+    }
+
     if request.method == "GET":
-        return render(
-            request,
-            "taxonomy_ui/upload.html",
-            {
-                "has_df": False,
-                "all_columns": get_part_master_columns(),  # ✅ DB driven
-            },
-        )
+        return render(request, "taxonomy_ui/upload.html", context)
 
     uploaded_files = request.FILES.getlist("files")
     if not uploaded_files:
-        return render(
-            request,
-            "taxonomy_ui/upload.html",
-            {
-                "error": "No files were submitted!",
-                "has_df": False,
-                "all_columns": get_part_master_columns(),
-            },
-        )
+        context["error"] = "No files were submitted!"
+        return render(request, "taxonomy_ui/upload.html", context)
 
     try:
-        # ✅ Stage-2 updates DB
+        # run Stage-2 (now dynamic DB version)
         output_bytes, filename = run_stage2_from_django(uploaded_files)
 
-        # ✅ preview from DB, NOT uploaded file
-        qs = PartMaster.objects.all().values()
-        df = pd.DataFrame(list(qs))
+        # save output file
+        output_dir = os.path.join(settings.MEDIA_ROOT, "output")
+        os.makedirs(output_dir, exist_ok=True)
 
-        return render(
-            request,
-            "taxonomy_ui/upload.html",
-            {
-                "has_df": not df.empty,
-                "preview_columns": df.columns.tolist(),
-                "preview_rows": df.head(50).values.tolist(),
-                "all_columns": df.columns.tolist(),  # ✅ checkbox fix
-            },
-        )
+        output_path = os.path.join(output_dir, filename)
+        with open(output_path, "wb") as f:
+            f.write(output_bytes)
+
+        # load preview from bytes (Excel)
+        df = pd.read_excel(io.BytesIO(output_bytes))
+
+        context.update({
+            "has_df": not df.empty,
+            "download_link": f"/download-full/{filename}/",
+            "output_filename": filename,
+            "preview_columns": list(df.columns),
+            "preview_rows": df.head(50).values.tolist(),
+            # 👇 IMPORTANT: override COLUMN_CHOICES with real columns
+            "all_columns": list(df.columns),
+        })
 
     except Exception as e:
-        return render(
-            request,
-            "taxonomy_ui/upload.html",
-            {
-                "error": str(e),
-                "has_df": False,
-                "all_columns": get_part_master_columns(),
-            },
-        )
+        context["error"] = str(e)
+
+    return render(request, "taxonomy_ui/upload.html", context)
+
 
 
 # ----------------------------------------------------------
-# DOWNLOAD FULL OUTPUT (DB → EXCEL)
+# DOWNLOAD FULL OUTPUT
 # ----------------------------------------------------------
 
 def download_full_output(request):
@@ -152,17 +142,18 @@ def download_full_output(request):
 
 
 # ----------------------------------------------------------
-# DOWNLOAD SELECTED COLUMNS (FIXED ✅)
+# DOWNLOAD SELECTED COLUMNS
 # ----------------------------------------------------------
 
 def download_selected_columns(request):
     if request.method != "POST":
         return HttpResponse("Invalid request", status=400)
 
-    selected_cols = request.POST.getlist("columns")
+    selected_cols = request.POST.getlist("columns[]")
     if not selected_cols:
         return HttpResponse("No columns selected", status=400)
 
+    # ✅ ALWAYS read from DB
     qs = PartMaster.objects.all().values(*selected_cols)
     df = pd.DataFrame(list(qs))
 
@@ -185,7 +176,18 @@ def download_selected_columns(request):
 @csrf_exempt
 def run_stage1_refresh(request):
     if request.method != "POST":
-        return JsonResponse({"error": "POST required"}, status=405)
+        return JsonResponse(
+            {"status": "error", "message": "POST required"},
+            status=405,
+        )
 
-    subprocess.Popen([sys.executable, STAGE1_SCRIPT])
-    return JsonResponse({"status": "ok", "message": "Stage-1 started"})
+    try:
+        subprocess.Popen([sys.executable, STAGE1_SCRIPT])
+        return JsonResponse(
+            {"status": "ok", "message": "Stage 1 started in background"}
+        )
+    except Exception as e:
+        return JsonResponse(
+            {"status": "error", "message": str(e)},
+            status=500,
+        )
