@@ -1,6 +1,7 @@
 """
 Django settings for taxonomy_portal project.
 Production-ready for Render deployment.
+SQLite locally + PostgreSQL on Render.
 """
 
 from pathlib import Path
@@ -17,13 +18,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY
 # --------------------------------------------------
 
-# ✅ Set this in Render → Environment Variables
 SECRET_KEY = os.environ.get(
     "DJANGO_SECRET_KEY",
     "unsafe-dev-secret-key-change-this"
 )
 
-# ✅ DEBUG controlled by env (never hardcode True in prod)
 DEBUG = os.environ.get("DJANGO_DEBUG", "False") == "True"
 
 # --------------------------------------------------
@@ -61,7 +60,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    "whitenoise.middleware.WhiteNoiseMiddleware",  # ✅ REQUIRED
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -84,7 +83,7 @@ WSGI_APPLICATION = "taxonomy_portal.wsgi.application"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [BASE_DIR / "templates"],  # ✅ Required
+        "DIRS": [BASE_DIR / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -98,16 +97,30 @@ TEMPLATES = [
 ]
 
 # --------------------------------------------------
-# DATABASE (POSTGRESQL – RENDER)
+# DATABASE CONFIGURATION (✅ FIXED)
 # --------------------------------------------------
+# ✔ PostgreSQL on Render
+# ✔ SQLite locally (NO postgres needed)
 
-DATABASES = {
-    "default": dj_database_url.config(
-        default=os.environ.get("DATABASE_URL"),
-        conn_max_age=600,
-        conn_health_checks=True,
-    )
-}
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+if DATABASE_URL:
+    # ✅ Render / Production
+    DATABASES = {
+        "default": dj_database_url.parse(
+            DATABASE_URL,
+            conn_max_age=600,
+            conn_health_checks=True,
+        )
+    }
+else:
+    # ✅ Local development
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
 
 # --------------------------------------------------
 # PASSWORD VALIDATION
@@ -136,7 +149,6 @@ USE_TZ = True
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
-# ✅ Only include STATICFILES_DIRS if folder exists
 STATICFILES_DIRS = []
 if (BASE_DIR / "static").exists():
     STATICFILES_DIRS.append(BASE_DIR / "static")
