@@ -15,3 +15,5 @@ pdf2image
 PyMuPDF
 tqdm
 python-dateutil
+ pdfplumber
+
