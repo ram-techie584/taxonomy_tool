@@ -1,22 +1,55 @@
-{% load dict_extras %}
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Part Master</title>
+    <style>
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            font-size: 14px;
+        }
+        th, td {
+            border: 1px solid #ccc;
+            padding: 6px;
+            text-align: left;
+        }
+        th {
+            background: #f4f4f4;
+            position: sticky;
+            top: 0;
+        }
+        tr:nth-child(even) {
+            background: #fafafa;
+        }
+    </style>
+</head>
 
+<body>
 <h2>Part Master Data</h2>
 
-<table border="1" cellspacing="0" cellpadding="5">
+<table>
     <thead>
         <tr>
             {% for col in columns %}
-                <th>{{ col }}</th>
+                <th>{{ col|title }}</th>
             {% endfor %}
         </tr>
     </thead>
+
     <tbody>
         {% for row in rows %}
             <tr>
                 {% for col in columns %}
-                    <td>{{ row|get_value:col }}</td>
+                    <td>{{ row[col] }}</td>
                 {% endfor %}
+            </tr>
+        {% empty %}
+            <tr>
+                <td colspan="{{ columns|length }}">No records found</td>
             </tr>
         {% endfor %}
     </tbody>
 </table>
+
+</body>
+</html>
