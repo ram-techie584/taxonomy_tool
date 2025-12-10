@@ -2,7 +2,6 @@
 
 from django.db import models
 
-
 class PartMaster(models.Model):
     part_number = models.CharField(max_length=100)
     updated_at = models.DateTimeField(auto_now=True)
@@ -25,4 +24,4 @@ class PartMaster(models.Model):
         ordering = ["part_number"]
 
     def __str__(self):
-        return f"{self.part_number} - {self.description or ''}"
+        return self.part_number
