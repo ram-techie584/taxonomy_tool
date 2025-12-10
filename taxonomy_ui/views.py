@@ -47,11 +47,12 @@ def home(request):
 # ----------------------------------------------------------
 def part_list(request):
     """
-    Display Part Master data from DB using Django ORM.
+    Show part_master table using Django ORM.
+    We always build rows as list of dicts so the template can use get_value.
     """
+    parts = PartMaster.objects.all().order_by("id")
 
-    parts = PartMaster.objects.all()
-
+    # full list of columns we want to display
     columns = [
         "id",
         "part_number",
@@ -70,28 +71,18 @@ def part_list(request):
 
     rows = []
     for p in parts:
-        rows.append(
-            {
-                "id": p.id,
-                "part_number": p.part_number,
-                "updated_at": p.updated_at,
-                "dimensions": p.dimensions,
-                "description": p.description,
-                "cost": p.cost,
-                "material": p.material,
-                "vendor_name": p.vendor_name,
-                "currency": p.currency,
-                "category_raw": p.category_raw,
-                "category_master": p.category_master,
-                "source_system": p.source_system,
-                "source_file": p.source_file,
-            }
-        )
+        row = {}
+        for col in columns:
+            row[col] = getattr(p, col, "")
+        rows.append(row)
 
     return render(
         request,
         "taxonomy_ui/parts_list.html",
-        {"columns": columns, "rows": rows},
+        {
+            "columns": columns,
+            "rows": rows,
+        },
     )
 
 
