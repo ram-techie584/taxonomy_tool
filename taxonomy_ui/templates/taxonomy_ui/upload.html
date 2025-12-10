@@ -472,6 +472,12 @@ tbody tr:hover {
 
 <div id="refresh-status"></div>
 
+{% if error %}
+  <div style="color:#ef4444; margin-bottom: 16px; font-weight: 500;">
+    {{ error }}
+  </div>
+{% endif %}
+
 <!-- ================= STEPPER ================= -->
 <div class="stepper">
   <div class="step active">
@@ -532,7 +538,7 @@ tbody tr:hover {
   <div class="card animate-appear" id="column-selector">
     <div class="card-header">🎯 2. Choose columns</div>
 
-    <form method="post" action="{% url 'taxonomy_ui:download_selected' %}">
+    <form method="post" action="{% url 'taxonomy_ui:download_selected_columns' %}">
       {% csrf_token %}
       <input type="hidden" name="output_filename" value="{{ output_filename }}">
 
@@ -543,7 +549,8 @@ tbody tr:hover {
         </label>
         {% for col in all_columns %}
         <label class="column-chip">
-          <input type="checkbox" name="selected_columns" value="{{ col }}">
+          <input type="checkbox" name="selected_columns" value="{{ col }}"
+                 {% if df and col in df.columns %}checked{% endif %}>
           {{ col }}
         </label>
         {% endfor %}
@@ -561,11 +568,11 @@ tbody tr:hover {
 </div>
 
 <!-- PREVIEW TABLE -->
-{% if has_df %}
+{% if has_df and df %}
 <div class="card animate-table" style="margin-top:24px;">
   <div class="card-header">👁️ Processed Preview</div>
   <div class="table-info">
-    Showing {{ df.shape.0 }} rows × {{ df.shape.1 }} columns
+    Showing {{ df.values|length }} rows × {{ df.columns|length }} columns
   </div>
 
   <div class="table-wrapper">
@@ -609,27 +616,29 @@ function updateFileDisplay(files) {
   }
 }
 
-uploadArea.onclick = () => fileInput.click();
+if (uploadArea && fileInput) {
+  uploadArea.onclick = () => fileInput.click();
 
-fileInput.onchange = (e) => {
-  updateFileDisplay(e.target.files);
-};
+  fileInput.onchange = (e) => {
+    updateFileDisplay(e.target.files);
+  };
 
-uploadArea.ondragover = e => {
-  e.preventDefault();
-  uploadArea.classList.add("dragover");
-};
+  uploadArea.ondragover = e => {
+    e.preventDefault();
+    uploadArea.classList.add("dragover");
+  };
 
-uploadArea.ondragleave = () => {
-  uploadArea.classList.remove("dragover");
-};
+  uploadArea.ondragleave = () => {
+    uploadArea.classList.remove("dragover");
+  };
 
-uploadArea.ondrop = e => {
-  e.preventDefault();
-  uploadArea.classList.remove("dragover");
-  fileInput.files = e.dataTransfer.files;
-  updateFileDisplay(e.dataTransfer.files);
-};
+  uploadArea.ondrop = e => {
+    e.preventDefault();
+    uploadArea.classList.remove("dragover");
+    fileInput.files = e.dataTransfer.files;
+    updateFileDisplay(e.dataTransfer.files);
+  };
+}
 
 /* Select All */
 function toggleAll(master) {
@@ -653,7 +662,7 @@ if (refreshBtn) {
       const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]')?.value || 
                         getCookie('csrftoken');
       
-      const response = await fetch("/refresh-stage1/", {
+      const response = await fetch("{% url 'taxonomy_ui:run_stage1_refresh' %}", {
         method: 'POST',
         headers: {
           'X-Requested-With': 'XMLHttpRequest',
@@ -666,14 +675,13 @@ if (refreshBtn) {
       if (response.ok && data.status === 'ok') {
         refreshStatus.textContent = '✓ ' + data.message + ' - Running in background';
         refreshStatus.style.color = 'var(--accent-secondary)';
-        refreshBtn.disabled = false;
-        refreshBtn.innerHTML = '<span>⟳</span> Refresh Stage 1';
       } else {
         throw new Error(data.message || 'Refresh failed');
       }
     } catch (error) {
       refreshStatus.textContent = '✗ Refresh failed: ' + error.message;
       refreshStatus.style.color = '#ef4444';
+    } finally {
       refreshBtn.disabled = false;
       refreshBtn.innerHTML = '<span>⟳</span> Refresh Stage 1';
     }
