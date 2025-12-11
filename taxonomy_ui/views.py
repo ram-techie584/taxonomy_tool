@@ -8,8 +8,9 @@ import subprocess
 import pandas as pd
 from django.conf import settings
 from django.http import HttpResponse, JsonResponse
-from django.shortcuts import render
+from django.shortcuts import render, redirect
 from django.views.decorators.csrf import csrf_exempt
+from django.db import connection
 
 from .models import PartMaster
 from taxonomy_ui.stage2_adapter import run_stage2_from_django
@@ -21,31 +22,33 @@ from taxonomy_ui.stage2_adapter import run_stage2_from_django
 
 STAGE1_SCRIPT = os.path.join(settings.BASE_DIR, "background_stage1.py")
 
-COLUMN_CHOICES = [
-    "part_number", "updated_at", "stock_qty", "vendor_code", "abc_class",
-    "commodity_code", "utilization_score", "material_group", "risk_rating",
-    "cost", "purchase_uom", "notes", "description_clean", "drawing_no",
-    "is_standard_part", "order_uom", "spec_grade", "spec_finish", "material",
-    "dimensions", "last_modified", "description", "category_master",
-    "analysis_comment", "created_date", "plant", "currency", "flag",
-    "checkout_status", "remarks", "approval_status", "revision_no",
-    "material_type", "avg_lead_time_days", "spec_weight", "no", "cad_type",
-    "storage_location", "quantity", "criticality_index", "category_raw",
-    "engineer_name", "active_flag", "file_size_mb", "valuation_type",
-    "spec_tolerance", "movement_frequency", "order_date", "delivery_date",
-    "pdf_page", "date", "due_date", "file_name", "sources",
-    "lifecycle_state", "vendor_name", "cad_file",
-    "source_system", "source_file",
-]
+
+# ----------------------------------------------------------
+# DB HELPERS
+# ----------------------------------------------------------
+
+def get_part_master_columns():
+    """
+    ✅ SINGLE SOURCE OF TRUTH FOR UI COLUMNS
+    Always read schema from DB
+    """
+    with connection.cursor() as cur:
+        cur.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'part_master'
+              AND column_name NOT IN ('id')
+            ORDER BY column_name;
+        """)
+        return [r[0] for r in cur.fetchall()]
 
 
 # ----------------------------------------------------------
 # HOME
 # ----------------------------------------------------------
-from django.shortcuts import redirect
+
 def home(request):
     return redirect("taxonomy_ui:upload_and_process")
-
 
 
 # ----------------------------------------------------------
@@ -55,12 +58,7 @@ def home(request):
 def part_list(request):
     parts = PartMaster.objects.all().order_by("id")
 
-    columns = [
-        "id", "part_number", "updated_at", "dimensions", "description",
-        "cost", "material", "vendor_name", "currency",
-        "category_raw", "category_master",
-        "source_system", "source_file",
-    ]
+    columns = get_part_master_columns()
 
     rows = [
         {col: getattr(p, col, "") for col in columns}
@@ -79,9 +77,15 @@ def part_list(request):
 # ----------------------------------------------------------
 
 def upload_and_process(request):
+    """
+    ✅ Upload → Clean → Enrich → Merge with DB
+    ✅ Preview from output
+    ✅ Column selector from DB (NOT upload)
+    """
+
     context = {
         "has_df": False,
-        "all_columns": COLUMN_CHOICES,   # default for initial GET
+        "all_columns": get_part_master_columns(),
     }
 
     if request.method == "GET":
@@ -93,10 +97,14 @@ def upload_and_process(request):
         return render(request, "taxonomy_ui/upload.html", context)
 
     try:
-        # run Stage-2 (now dynamic DB version)
+        # --------------------------------------------------
+        # Run Stage-2
+        # --------------------------------------------------
         output_bytes, filename = run_stage2_from_django(uploaded_files)
 
-        # save output file
+        # --------------------------------------------------
+        # Save output (optional, for user download)
+        # --------------------------------------------------
         output_dir = os.path.join(settings.MEDIA_ROOT, "output")
         os.makedirs(output_dir, exist_ok=True)
 
@@ -104,17 +112,23 @@ def upload_and_process(request):
         with open(output_path, "wb") as f:
             f.write(output_bytes)
 
-        # load preview from bytes (Excel)
+        # --------------------------------------------------
+        # Preview (ONLY for UI)
+        # --------------------------------------------------
         df = pd.read_excel(io.BytesIO(output_bytes))
 
         context.update({
             "has_df": not df.empty,
-            "download_link": f"/download-full/{filename}/",
+            "download_link": "/download-full/",
             "output_filename": filename,
+
+            # ✅ Preview
+            "df": df,
             "preview_columns": list(df.columns),
             "preview_rows": df.head(50).values.tolist(),
-            # 👇 IMPORTANT: override COLUMN_CHOICES with real columns
-            "all_columns": list(df.columns),
+
+            # ✅ DB schema for column selector
+            "all_columns": get_part_master_columns(),
         })
 
     except Exception as e:
@@ -123,14 +137,16 @@ def upload_and_process(request):
     return render(request, "taxonomy_ui/upload.html", context)
 
 
-
 # ----------------------------------------------------------
-# DOWNLOAD FULL OUTPUT
+# DOWNLOAD FULL OUTPUT (FROM DB)
 # ----------------------------------------------------------
 
 def download_full_output(request):
     qs = PartMaster.objects.all().values()
     df = pd.DataFrame(list(qs))
+
+    if df.empty:
+        return HttpResponse("No data in database", status=400)
 
     response = HttpResponse(
         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -142,18 +158,19 @@ def download_full_output(request):
 
 
 # ----------------------------------------------------------
-# DOWNLOAD SELECTED COLUMNS
+# DOWNLOAD SELECTED COLUMNS (FROM DB)
 # ----------------------------------------------------------
 
 def download_selected_columns(request):
     if request.method != "POST":
         return HttpResponse("Invalid request", status=400)
 
-    selected_cols = request.POST.getlist("columns[]")
+    # ✅ FIXED: matches upload.html name
+    selected_cols = request.POST.getlist("selected_columns")
+
     if not selected_cols:
         return HttpResponse("No columns selected", status=400)
 
-    # ✅ ALWAYS read from DB
     qs = PartMaster.objects.all().values(*selected_cols)
     df = pd.DataFrame(list(qs))
 
