@@ -336,6 +336,34 @@ body.dark .file-selected-info {
 }
 
 /* ======================================================
+   STATUS BADGES
+====================================================== */
+.status-badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.status-new {
+  background-color: #d1fae5;
+  color: #065f46;
+}
+
+.status-updated {
+  background-color: #fef3c7;
+  color: #92400e;
+}
+
+.status-unchanged {
+  background-color: #e5e7eb;
+  color: #374151;
+}
+
+/* ======================================================
    TABLE
 ====================================================== */
 .table-wrapper {
@@ -396,6 +424,62 @@ tbody tr:hover {
   color: var(--text-tertiary);
   margin-bottom: 12px;
   font-weight: 500;
+}
+
+/* Style for database previous values */
+.db-previous {
+  background-color: #fff3cd !important;
+  border-left: 3px solid #ffc107 !important;
+  font-style: italic;
+  opacity: 0.9;
+}
+
+/* Style for changed values */
+.changed-value {
+  background-color: #d4edda !important;
+  border-left: 3px solid #28a745 !important;
+  font-weight: 600;
+}
+
+/* ======================================================
+   LEGEND
+====================================================== */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-color {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+}
+
+.legend-new {
+  background-color: #d4edda;
+  border: 1px solid #28a745;
+}
+
+.legend-previous {
+  background-color: #fff3cd;
+  border: 1px solid #ffc107;
+}
+
+.legend-unchanged {
+  background-color: #e5e7eb;
+  border: 1px solid #6c757d;
 }
 
 /* ======================================================
@@ -538,29 +622,36 @@ tbody tr:hover {
   <!-- CHOOSE COLUMNS (ONLY AFTER UPLOAD) -->
   {% if has_df %}
   <div class="card animate-appear" id="column-selector">
-    <div class="card-header">🎯 2. Choose columns</div>
+    <div class="card-header">🎯 2. Choose columns to download</div>
+    
+    <div style="margin-bottom: 15px; color: var(--text-tertiary); font-size: 14px;">
+      All columns are selected by default. Deselect any columns you don't want in the download.
+    </div>
 
-    <form method="post" action="{% url 'taxonomy_ui:download_selected_columns' %}">
+    <form method="post" action="{% url 'taxonomy_ui:download_selected_columns' %}" id="download-form">
       {% csrf_token %}
       <input type="hidden" name="output_filename" value="{{ output_filename }}">
 
-      <div class="columns-grid">
-        <label class="column-chip">
-          <input type="checkbox" onclick="toggleAll(this)">
-          Select all columns
+      <div class="columns-grid" id="columns-container">
+        <label class="column-chip select-all-chip">
+          <input type="checkbox" id="select-all" onclick="toggleAll(this)" checked>
+          <strong>Select all columns</strong>
         </label>
         {% for col in all_columns %}
         <label class="column-chip">
-          <input type="checkbox" name="selected_columns" value="{{ col }}" checked>
+          <input type="checkbox" name="selected_columns" value="{{ col }}" class="column-checkbox" checked>
           {{ col }}
+          {% if '_previous' in col %}
+            <span style="font-size: 11px; color: var(--text-tertiary);">(Previous)</span>
+          {% endif %}
         </label>
         {% endfor %}
       </div>
 
       <div class="btn-row">
-        <button class="btn-success" type="submit">
+        <button class="btn-success" type="submit" id="download-selected-btn">
           <span>⬇️</span>
-          Download Selected
+          Download Selected ({{ all_columns|length }} columns)
         </button>
       </div>
     </form>
@@ -571,9 +662,44 @@ tbody tr:hover {
 <!-- PREVIEW TABLE -->
 {% if has_df and df %}
 <div class="card animate-table" style="margin-top:24px;">
-  <div class="card-header">👁️ Processed Preview</div>
+  <div class="card-header">👁️ Merged Preview (Uploaded + Database Comparison)</div>
+  
+  <!-- Legend -->
+  <div class="legend">
+    <div class="legend-item">
+      <div class="legend-color legend-new"></div>
+      <span>Changed/New values</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color legend-previous"></div>
+      <span>Previous database values</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color legend-unchanged"></div>
+      <span>Unchanged values</span>
+    </div>
+    <div class="legend-item">
+      <span class="status-badge status-new">New</span>
+      <span>Part not in database</span>
+    </div>
+    <div class="legend-item">
+      <span class="status-badge status-updated">Updated</span>
+      <span>Values changed from database</span>
+    </div>
+    <div class="legend-item">
+      <span class="status-badge status-unchanged">Unchanged</span>
+      <span>Same as database</span>
+    </div>
+  </div>
+
   <div class="table-info">
     Showing {{ row_count }} rows × {{ col_count }} columns
+    {% if show_stats %}
+    <br>
+    <small>
+      {{ new_count }} new parts • {{ updated_count }} updated • {{ unchanged_count }} unchanged
+    </small>
+    {% endif %}
   </div>
 
   <div class="table-wrapper">
@@ -581,7 +707,14 @@ tbody tr:hover {
       <thead>
         <tr>
           {% for c in all_columns %}
-          <th>{{ c }}</th>
+          <th>
+            {{ c }}
+            {% if '_previous' in c %}
+            <br><small style="font-weight: normal; opacity: 0.7;">(Database)</small>
+            {% elif c == 'status' %}
+            <br><small style="font-weight: normal; opacity: 0.7;">Status</small>
+            {% endif %}
+          </th>
           {% endfor %}
         </tr>
       </thead>
@@ -589,7 +722,52 @@ tbody tr:hover {
         {% for row in df %}
         <tr>
           {% for c in all_columns %}
-          <td>{{ row|get_item:c|default:"" }}</td>
+          {% with value=row|get_item:c|default:"" %}
+          <td class="
+            {% if c == 'status' %}
+              {% if value == 'New' %}status-new
+              {% elif value == 'Updated' %}status-updated
+              {% else %}status-unchanged
+              {% endif %}
+            {% elif '_previous' in c %}
+              db-previous
+            {% elif value and '_previous' in c|add:'_previous' %}
+              {% with prev_col=c|add:'_previous' %}
+                {% if value != row|get_item:prev_col|default:"" %}
+                  changed-value
+                {% endif %}
+              {% endwith %}
+            {% endif %}">
+            
+            {% if c == 'status' %}
+              <span class="status-badge 
+                {% if value == 'New' %}status-new
+                {% elif value == 'Updated' %}status-updated
+                {% else %}status-unchanged
+                {% endif %}">
+                {{ value }}
+              </span>
+              
+            {% elif '_previous' in c %}
+              {{ value }}
+              
+            {% else %}
+              {% comment %} Check if this value differs from database {% endcomment %}
+              {% with prev_col=c|add:'_previous' %}
+                {% if prev_col in all_columns and value != row|get_item:prev_col|default:"" and row|get_item:prev_col|default:"" != "" %}
+                  <div style="display: flex; flex-direction: column; gap: 2px;">
+                    <span style="font-weight: bold;">{{ value }}</span>
+                    <small style="font-size: 11px; color: #666; font-style: italic;">
+                      Was: {{ row|get_item:prev_col|default:"(empty)" }}
+                    </small>
+                  </div>
+                {% else %}
+                  {{ value }}
+                {% endif %}
+              {% endwith %}
+            {% endif %}
+          </td>
+          {% endwith %}
           {% endfor %}
         </tr>
         {% endfor %}
@@ -641,11 +819,62 @@ if (uploadArea && fileInput) {
   };
 }
 
-/* Select All */
+/* Auto-check all columns on page load */
+document.addEventListener('DOMContentLoaded', function() {
+  const checkboxes = document.querySelectorAll('.column-checkbox');
+  const selectAllCheckbox = document.getElementById('select-all');
+  
+  // Ensure all are checked
+  if (checkboxes.length > 0) {
+    checkboxes.forEach(cb => {
+      cb.checked = true;
+    });
+    
+    if (selectAllCheckbox) {
+      selectAllCheckbox.checked = true;
+    }
+    
+    updateDownloadButton();
+  }
+});
+
+/* Improved toggleAll function */
 function toggleAll(master) {
-  document.querySelectorAll('input[name="selected_columns"]')
-    .forEach(cb => cb.checked = master.checked);
+  const checkboxes = document.querySelectorAll('.column-checkbox');
+  checkboxes.forEach(cb => {
+    cb.checked = master.checked;
+  });
+  updateDownloadButton();
 }
+
+/* Update button text with selected count */
+function updateDownloadButton() {
+  const selected = document.querySelectorAll('.column-checkbox:checked').length;
+  const total = document.querySelectorAll('.column-checkbox').length;
+  const button = document.querySelector('#download-selected-btn');
+  
+  if (button) {
+    button.innerHTML = `<span>⬇️</span> Download Selected (${selected} of ${total} columns)`;
+  }
+}
+
+/* Update count when any checkbox changes */
+document.addEventListener('change', function(e) {
+  if (e.target.classList.contains('column-checkbox') || e.target.id === 'select-all') {
+    updateDownloadButton();
+    
+    // Update "Select All" checkbox state
+    const selectAllCheckbox = document.getElementById('select-all');
+    const checkboxes = document.querySelectorAll('.column-checkbox');
+    if (selectAllCheckbox && checkboxes.length > 0) {
+      const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+      const someChecked = Array.from(checkboxes).some(cb => cb.checked);
+      
+      selectAllCheckbox.checked = allChecked;
+      selectAllCheckbox.indeterminate = !allChecked && someChecked;
+    }
+  }
+});
 
 /* Refresh Stage 1 Button */
 const refreshBtn = document.getElementById("refresh-btn");
@@ -704,6 +933,14 @@ function getCookie(name) {
   }
   return cookieValue;
 }
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+  // Add event listeners to all checkboxes
+  document.querySelectorAll('.column-checkbox').forEach(cb => {
+    cb.addEventListener('change', updateDownloadButton);
+  });
+});
 </script>
 
 {% endblock %}
