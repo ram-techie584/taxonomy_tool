@@ -74,21 +74,79 @@ def upload_and_process(request):
             )
 
         except Exception as e:
+            # Any error in Stage-2 shows as red text in the upload page.
             context["error"] = str(e)
 
     return render(request, "taxonomy_ui/upload.html", context)
 
 
 # --------------------------------------------------------------------
-# VIEW DB PARTS
+# VIEW DB PARTS  (/parts/)
 # --------------------------------------------------------------------
 def part_list(request):
     """
     Shows all rows from PartMaster.
-    You should have a template: taxonomy_ui/part_list.html
+
+    To avoid template-related 500 errors on Render, we render
+    a simple HTML table directly here instead of depending on
+    an external part_list.html template.
     """
+
     parts = PartMaster.objects.all().order_by("id")
-    return render(request, "taxonomy_ui/part_list.html", {"parts": parts})
+
+    if not parts.exists():
+        return HttpResponse(
+            "<h2>No parts found in PartMaster table.</h2>",
+            content_type="text/html",
+        )
+
+    # Build a very simple HTML table
+    cols = [
+        "id",
+        "part_number",
+        "dimensions",
+        "description",
+        "cost",
+        "material",
+        "vendor_name",
+        "currency",
+        "category_raw",
+        "category_master",
+        "source_system",
+        "source_file",
+    ]
+
+    rows_html = []
+    for p in parts:
+        cells = []
+        for c in cols:
+            val = getattr(p, c, "")
+            cells.append(f"<td>{val}</td>")
+        rows_html.append(f"<tr>{''.join(cells)}</tr>")
+
+    header_html = "".join(f"<th>{c}</th>" for c in cols)
+
+    html = f"""
+    <html>
+      <head>
+        <title>PartMaster Data</title>
+      </head>
+      <body>
+        <h2>PartMaster Records (total: {parts.count()})</h2>
+        <table border="1" cellpadding="4" cellspacing="0">
+          <thead>
+            <tr>{header_html}</tr>
+          </thead>
+          <tbody>
+            {''.join(rows_html)}
+          </tbody>
+        </table>
+        <p><a href="/">⬅ Back to Upload</a></p>
+      </body>
+    </html>
+    """
+
+    return HttpResponse(html)
 
 
 # --------------------------------------------------------------------
@@ -174,7 +232,6 @@ def run_stage1_refresh(request):
     """
 
     try:
-        # This function already prints logs to console.
         load_part_master_from_snapshot()
         return JsonResponse(
             {

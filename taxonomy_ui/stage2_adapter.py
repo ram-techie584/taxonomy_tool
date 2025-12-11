@@ -73,16 +73,24 @@ def run_stage2_from_django(uploaded_files):
     """
 
     if not uploaded_files:
-        raise ValueError("No files uploaded.")
+        raise ValueError("No files uploaded. Please select a CSV/XLS/XLSX file.")
+
+    dfs = []
 
     # -------------------------------------------------
     # 1. Read all uploaded files into a single DataFrame
+    #    (skip unsupported/non-tabular files like PDF)
     # -------------------------------------------------
-    dfs = []
-
     for f in uploaded_files:
-        df_file = load_file(f)
+        try:
+            df_file = load_file(f)
+        except Exception as e:
+            # If load_file explodes on PDF etc, just skip this file
+            print(f"[Stage2] Skipping file {f.name}: {e}")
+            continue
+
         if df_file is None or df_file.empty:
+            print(f"[Stage2] File {f.name} produced no rows, skipping.")
             continue
 
         # Track provenance
@@ -92,7 +100,12 @@ def run_stage2_from_django(uploaded_files):
         dfs.append(df_file)
 
     if not dfs:
-        raise ValueError("No valid data found in uploaded files.")
+        # This will be caught in the view and shown as a red error,
+        # NOT as a 500.
+        raise ValueError(
+            "No valid tabular data found in uploaded files. "
+            "Only CSV, XLS, and XLSX files are supported."
+        )
 
     df_raw = pd.concat(dfs, ignore_index=True)
 
@@ -164,7 +177,7 @@ def run_stage2_from_django(uploaded_files):
     # 6. UPSERT into PartMaster
     # -------------------------------------------------
     with transaction.atomic():
-        for row in merged_results:
+        for row in df_out.to_dict(orient="records"):
             pn = row.get("part_number")
             if not pn:
                 continue
