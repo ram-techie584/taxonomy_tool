@@ -31,7 +31,7 @@ def home(request):
 
 
 # --------------------------------------------------------------------
-# UPLOAD + PROCESS (ENHANCED ERROR HANDLING)
+# UPLOAD + PROCESS (FIXED FOR TEMPLATE)
 # --------------------------------------------------------------------
 def upload_and_process(request):
     """
@@ -72,6 +72,13 @@ def upload_and_process(request):
                 context["error"] = "Processing completed but no data was produced."
                 return render(request, "taxonomy_ui/upload.html", context)
 
+            # ✅ CRITICAL FIX: Convert DataFrame to template-friendly format
+            # The template needs a list of dictionaries, not a DataFrame
+            df_records = df_out.to_dict('records')  # List of dicts
+            
+            # Also get column names separately
+            all_columns = list(df_out.columns)
+            
             # Build download link for "Download All" button
             download_url = reverse(
                 "taxonomy_ui:download_full_output",
@@ -81,13 +88,16 @@ def upload_and_process(request):
             context.update(
                 {
                     "has_df": True,
-                    "df": df_out,
-                    "all_columns": list(df_out.columns),
+                    "df": df_records,          # ✅ Now it's a list of dicts
+                    "df_columns": all_columns, # ✅ Pass columns separately
+                    "all_columns": all_columns,
                     "download_link": download_url,
                     "output_filename": SNAPSHOT_FILENAME,
+                    "row_count": len(df_records),  # ✅ Add row count for template
+                    "col_count": len(all_columns), # ✅ Add column count for template
                 }
             )
-            print(f"[SUCCESS] Upload processed successfully: {len(df_out)} rows")
+            print(f"[SUCCESS] Upload processed successfully: {len(df_records)} rows, {len(all_columns)} columns")
 
         except Exception as e:
             # Capture full error for logging
@@ -354,3 +364,13 @@ def health_check(request):
             'pdfplumber': __import__('pdfplumber').__version__ if 'pdfplumber' in globals() else 'Not loaded'
         }
     })
+
+# Add this function to views.py
+from django.template.defaulttags import register
+
+@register.filter
+def get_item(dictionary, key):
+    """Template filter to get dictionary item by key"""
+    if isinstance(dictionary, dict):
+        return dictionary.get(key, "")
+    return ""
