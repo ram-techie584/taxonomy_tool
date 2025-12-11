@@ -63,85 +63,72 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def create_merged_preview(df_merged, uploaded_part_numbers):
     """
-    Create a preview DataFrame that shows both uploaded data and existing database data.
-    
-    Args:
-        df_merged: DataFrame with merged data (after merge_db_with_user)
-        uploaded_part_numbers: Set of part numbers from uploaded files
-        
-    Returns:
-        DataFrame with both current and previous values for comparison
+    Simple version: For each uploaded part:
+    - If in database: Show ALL database data
+    - If not in database: Show uploaded data
     """
-    # Get database records for uploaded part numbers
-    db_records = PartMaster.objects.filter(part_number__in=uploaded_part_numbers)
+    from django.db import connection
     
-    # Convert DB records to dict for easy lookup
-    db_data = {}
-    for record in db_records:
-        db_data[record.part_number] = {
-            "dimensions": record.dimensions,
-            "description": record.description,
-            "cost": record.cost,
-            "material": record.material,
-            "vendor_name": record.vendor_name,
-            "currency": record.currency,
-            "category_raw": record.category_raw,
-            "category_master": record.category_master,
-            "source_system": record.source_system,
-            "source_file": record.source_file,
-        }
-    
-    # Create preview rows
     preview_rows = []
     
-    for _, row in df_merged.iterrows():
-        pn = row.get("part_number")
-        preview_row = {"part_number": pn}
+    # Get a list of all parts in database
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT part_number FROM part_master")
+        all_db_parts = {row[0] for row in cursor.fetchall()}
+    
+    print(f"[DEBUG] Database has {len(all_db_parts)} total parts")
+    
+    for _, uploaded_row in df_merged.iterrows():
+        pn = uploaded_row.get("part_number")
+        if not pn:
+            continue
         
-        # Get database values for this part number
-        db_row = db_data.get(pn, {})
-        
-        # For each column, add both current and previous values
-        for col in df_merged.columns:
-            if col == "part_number":
-                continue
+        # Check if part exists in database
+        if pn in all_db_parts:
+            # Get COMPLETE database data for this part
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT * FROM part_master WHERE part_number = %s",
+                    [pn]
+                )
+                columns = [col[0] for col in cursor.description]
+                values = cursor.fetchone()
                 
-            current_val = row.get(col)
-            previous_val = db_row.get(col)
-            
-            # Add current value (from upload/merge)
-            preview_row[col] = current_val
-            
-            # Add previous database value if it exists and is different
-            if previous_val is not None and previous_val != current_val:
-                preview_row[f"{col}_previous"] = previous_val
-            elif previous_val is not None:
-                # If same, still show for completeness
-                preview_row[f"{col}_previous"] = previous_val
-        
-        # Add a status column
-        if pn in db_data:
-            preview_row["status"] = "Updated" if any(
-                row.get(col) != db_row.get(col) 
-                for col in db_row.keys() 
-                if col in row
-            ) else "Unchanged"
+                if values:
+                    # Create row with ALL database data
+                    db_data = dict(zip(columns, values))
+                    
+                    # Remove internal fields
+                    db_data.pop('id', None)
+                    
+                    # Add status
+                    db_data['status'] = 'From Database'
+                    preview_rows.append(db_data)
         else:
-            preview_row["status"] = "New"
-            preview_row["source_system_previous"] = None
-            preview_row["source_file_previous"] = None
+            # Part not in database - use uploaded data
+            row_data = uploaded_row.to_dict()
+            row_data['status'] = 'New (Uploaded)'
+            preview_rows.append(row_data)
+    
+    # Create DataFrame
+    if preview_rows:
+        df_preview = pd.DataFrame(preview_rows)
         
-        preview_rows.append(preview_row)
-    
-    df_preview = pd.DataFrame(preview_rows)
-    
-    # Reorder columns: part_number, status, then all other columns
-    if not df_preview.empty:
-        col_order = ["part_number", "status"]
-        other_cols = [c for c in df_preview.columns if c not in col_order]
-        df_preview = df_preview[col_order + other_cols]
-    
-    return df_preview
+        # Fill any missing values with empty string
+        df_preview = df_preview.fillna("")
+        
+        print(f"[SUCCESS] Preview: {len(df_preview)} rows, {len(df_preview.columns)} columns")
+        
+        # Show sample of what we got
+        if not df_preview.empty:
+            sample_part = df_preview.iloc[0]['part_number']
+            sample_status = df_preview.iloc[0]['status']
+            sample_cols = list(df_preview.columns)[:10]
+            print(f"[DEBUG] Sample - Part {sample_part}: {sample_status}, columns: {sample_cols}")
+        
+        return df_preview
+    else:
+        return pd.DataFrame()
 
 
 def run_stage2_from_django(uploaded_files):
