@@ -1,4 +1,6 @@
 {% extends "taxonomy_ui/base.html" %}
+{% load custom_filters %}  <!-- ADD THIS LINE -->
+
 {% block content %}
 
 <!-- ================= STYLES FOR UPLOAD PAGE ================= -->
@@ -586,8 +588,8 @@ tbody tr:hover {
       <tbody>
         {% for row in df %}
         <tr>
-          {% for key, value in row.items %}
-          <td>{{ value }}</td>
+          {% for c in all_columns %}
+          <td>{{ row|get_item:c|default:"" }}</td>
           {% endfor %}
         </tr>
         {% endfor %}

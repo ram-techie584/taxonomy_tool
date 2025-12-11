@@ -89,7 +89,6 @@ def upload_and_process(request):
                 {
                     "has_df": True,
                     "df": df_records,          # ✅ Now it's a list of dicts
-                    "df_columns": all_columns, # ✅ Pass columns separately
                     "all_columns": all_columns,
                     "download_link": download_url,
                     "output_filename": SNAPSHOT_FILENAME,
@@ -364,13 +363,3 @@ def health_check(request):
             'pdfplumber': __import__('pdfplumber').__version__ if 'pdfplumber' in globals() else 'Not loaded'
         }
     })
-
-# Add this function to views.py
-from django.template.defaulttags import register
-
-@register.filter
-def get_item(dictionary, key):
-    """Template filter to get dictionary item by key"""
-    if isinstance(dictionary, dict):
-        return dictionary.get(key, "")
-    return ""
