@@ -1,6 +1,13 @@
 # taxonomy_ui/stage2_adapter.py
 
-import io
+"""
+Stage-2 adapter: runs the ingestion / cleansing / enrichment pipeline
+from Django, updates PartMaster, and generates an Excel snapshot.
+
+Used by: taxonomy_ui.views.upload_and_process
+"""
+
+from pathlib import Path
 from collections import defaultdict
 
 import pandas as pd
@@ -13,40 +20,92 @@ from merge_logic import merge_db_with_user
 from taxonomy_ui.models import PartMaster
 
 
+# --------------------------------------------------------------------
+# PATHS / CONSTANTS
+# --------------------------------------------------------------------
+BASE_DIR = Path(__file__).resolve().parent.parent   # project root (where manage.py is)
+OUTPUT_DIR = BASE_DIR / "output"
+SNAPSHOT_PATH = OUTPUT_DIR / "stage1_master_snapshot.xlsx"
+
+REQUIRED_COLS = [
+    "part_number",
+    "dimensions",
+    "description",
+    "cost",
+    "material",
+    "vendor_name",
+    "currency",
+    "category_raw",
+    "category_master",
+    "source_system",
+    "source_file",
+]
+
+
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure all required columns exist for DB + snapshot.
+    Extra columns (from enrichment) are kept at the end.
+    """
+    for col in REQUIRED_COLS:
+        if col not in df.columns:
+            df[col] = None
+
+    # Required columns first, then all others
+    other_cols = [c for c in df.columns if c not in REQUIRED_COLS]
+    return df[REQUIRED_COLS + other_cols]
+
+
 def run_stage2_from_django(uploaded_files):
     """
-    Stage-2 pipeline (Render safe)
+    Stage-2 pipeline (Render-safe, ORM-only).
 
-    ✅ No psycopg2
-    ✅ No localhost
-    ✅ Django ORM only
+    Steps:
+      1. Read uploaded file(s) via `load_file`
+      2. Run cleansing + enrichment
+      3. Merge user rows with existing DB rows via `merge_db_with_user`
+      4. Upsert into PartMaster
+      5. Write snapshot Excel to output/stage1_master_snapshot.xlsx
+      6. Return DataFrame for preview table
+
+    Returns:
+        pandas.DataFrame: final merged/cleaned dataset
     """
 
+    if not uploaded_files:
+        raise ValueError("No files uploaded.")
+
+    # -------------------------------------------------
+    # 1. Read all uploaded files into a single DataFrame
+    # -------------------------------------------------
     dfs = []
 
-    # -------------------------------------------------
-    # 1. Read uploaded files
-    # -------------------------------------------------
     for f in uploaded_files:
-        df = load_file(f)  # must support file-like object
-        if df is None or df.empty:
+        df_file = load_file(f)
+        if df_file is None or df_file.empty:
             continue
 
-        df["source_system"] = "user"
-        df["source_file"] = f.name
-        dfs.append(df)
+        # Track provenance
+        df_file["source_system"] = "user"
+        df_file["source_file"] = f.name
+
+        dfs.append(df_file)
 
     if not dfs:
         raise ValueError("No valid data found in uploaded files.")
 
+    df_raw = pd.concat(dfs, ignore_index=True)
+
     # -------------------------------------------------
     # 2. Clean + enrich
     # -------------------------------------------------
-    df_raw = pd.concat(dfs, ignore_index=True)
-
     df_clean = cleanup_pipeline(df_raw)
     df_clean = enrich_from_description(df_clean)
 
+    if "part_number" not in df_clean.columns:
+        raise ValueError("Required column 'part_number' is missing after processing.")
+
+    # Drop rows with missing part_number
     df_clean = df_clean[df_clean["part_number"].notna()].copy()
     df_clean["part_number"] = df_clean["part_number"].astype(str).str.strip()
 
@@ -64,13 +123,14 @@ def run_stage2_from_django(uploaded_files):
     merged_results = []
 
     # -------------------------------------------------
-    # 4. Merge USER data with DB (ORM)
+    # 4. Merge USER data with DB (ORM) via merge_db_with_user
     # -------------------------------------------------
     for pn, user_rows in grouped.items():
         db_obj = PartMaster.objects.filter(part_number=pn).first()
 
         db_row = None
         if db_obj:
+            # Only fields used in merge + required by Stage-1
             db_row = {
                 "part_number": db_obj.part_number,
                 "dimensions": db_obj.dimensions,
@@ -88,13 +148,29 @@ def run_stage2_from_django(uploaded_files):
         merged = merge_db_with_user(db_row, user_rows)
         merged_results.append(merged)
 
+    if not merged_results:
+        raise ValueError("Stage-2 pipeline produced no merged results.")
+
+    df_out = pd.DataFrame(merged_results)
+    df_out = normalize_columns(df_out)
+
     # -------------------------------------------------
-    # 5. UPSERT using ORM (atomic)
+    # 5. Write Excel snapshot for download + Stage-1
+    # -------------------------------------------------
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    df_out.to_excel(SNAPSHOT_PATH, index=False)
+
+    # -------------------------------------------------
+    # 6. UPSERT into PartMaster
     # -------------------------------------------------
     with transaction.atomic():
         for row in merged_results:
+            pn = row.get("part_number")
+            if not pn:
+                continue
+
             PartMaster.objects.update_or_create(
-                part_number=row.get("part_number"),
+                part_number=pn,
                 defaults={
                     "dimensions": row.get("dimensions"),
                     "description": row.get("description"),
@@ -109,15 +185,5 @@ def run_stage2_from_django(uploaded_files):
                 },
             )
 
-    # -------------------------------------------------
-    # 6. Generate Excel output
-    # -------------------------------------------------
-    output_buffer = io.BytesIO()
-    df_out = pd.DataFrame(merged_results)
-
-    with pd.ExcelWriter(output_buffer, engine="xlsxwriter") as writer:
-        df_out.to_excel(writer, index=False, sheet_name="Parts")
-
-    output_buffer.seek(0)
-
-    return output_buffer.getvalue(), "user_output.xlsx"
+    # DataFrame is returned for preview in the UI
+    return df_out
