@@ -508,7 +508,7 @@ tbody tr:hover {
         <div class="upload-icon">📄</div>
         <div class="upload-text">Drag & drop file here</div>
         <div class="upload-subtext">
-          Supported formats: CSV, XLS, XLSX
+          Supported formats: CSV, XLS, XLSX, PDF
         </div>
         <input type="file" name="files" id="file-input" multiple hidden>
       </div>
@@ -549,8 +549,7 @@ tbody tr:hover {
         </label>
         {% for col in all_columns %}
         <label class="column-chip">
-          <input type="checkbox" name="selected_columns" value="{{ col }}"
-                 {% if df and col in df.columns %}checked{% endif %}>
+          <input type="checkbox" name="selected_columns" value="{{ col }}" checked>
           {{ col }}
         </label>
         {% endfor %}
@@ -572,23 +571,23 @@ tbody tr:hover {
 <div class="card animate-table" style="margin-top:24px;">
   <div class="card-header">👁️ Processed Preview</div>
   <div class="table-info">
-    Showing {{ df.values|length }} rows × {{ df.columns|length }} columns
+    Showing {{ row_count }} rows × {{ col_count }} columns
   </div>
 
   <div class="table-wrapper">
     <table>
       <thead>
         <tr>
-          {% for c in df.columns %}
+          {% for c in all_columns %}
           <th>{{ c }}</th>
           {% endfor %}
         </tr>
       </thead>
       <tbody>
-        {% for row in df.values %}
+        {% for row in df %}
         <tr>
-          {% for cell in row %}
-          <td>{{ cell }}</td>
+          {% for c in all_columns %}
+          <td>{{ row|get_item:c|default:"" }}</td>
           {% endfor %}
         </tr>
         {% endfor %}
