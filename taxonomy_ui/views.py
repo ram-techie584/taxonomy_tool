@@ -1,6 +1,8 @@
 # taxonomy_ui/views.py
 
 from pathlib import Path
+import os
+import traceback
 
 import pandas as pd
 
@@ -29,7 +31,7 @@ def home(request):
 
 
 # --------------------------------------------------------------------
-# UPLOAD + PROCESS
+# UPLOAD + PROCESS (ENHANCED ERROR HANDLING)
 # --------------------------------------------------------------------
 def upload_and_process(request):
     """
@@ -46,6 +48,7 @@ def upload_and_process(request):
         "all_columns": [],
         "download_link": None,
         "output_filename": SNAPSHOT_FILENAME,
+        "error": None,
     }
 
     if request.method == "POST":
@@ -53,9 +56,21 @@ def upload_and_process(request):
             # Input name in template is "files"
             uploaded_files = request.FILES.getlist("files")
             if not uploaded_files:
-                raise ValueError("Please select at least one file to upload.")
+                context["error"] = "Please select at least one file to upload."
+                return render(request, "taxonomy_ui/upload.html", context)
 
+            # Log upload info for debugging
+            print(f"[UPLOAD] Received {len(uploaded_files)} files")
+            for f in uploaded_files:
+                print(f"[UPLOAD] File: {f.name}, Size: {f.size} bytes, Type: {f.content_type}")
+
+            # Process files
             df_out = run_stage2_from_django(uploaded_files)
+
+            # Check if we got valid data
+            if df_out is None or df_out.empty:
+                context["error"] = "Processing completed but no data was produced."
+                return render(request, "taxonomy_ui/upload.html", context)
 
             # Build download link for "Download All" button
             download_url = reverse(
@@ -72,10 +87,23 @@ def upload_and_process(request):
                     "output_filename": SNAPSHOT_FILENAME,
                 }
             )
+            print(f"[SUCCESS] Upload processed successfully: {len(df_out)} rows")
 
         except Exception as e:
-            # Any error in Stage-2 shows as red text in the upload page.
-            context["error"] = str(e)
+            # Capture full error for logging
+            error_msg = str(e)
+            print(f"[ERROR] Upload failed: {error_msg}")
+            print(f"[ERROR] Traceback: {traceback.format_exc()}")
+            
+            # User-friendly error messages
+            if "pdfplumber" in error_msg.lower():
+                context["error"] = "PDF processing requires pdfplumber. Please install it in requirements.txt"
+            elif "memory" in error_msg.lower() or "large" in error_msg.lower():
+                context["error"] = f"File too large for processing. Please upload files under 10MB. Error: {error_msg}"
+            elif "part_number" in error_msg.lower():
+                context["error"] = f"Data error: {error_msg}. Please ensure your files have a 'part_number' column."
+            else:
+                context["error"] = f"Processing error: {error_msg}"
 
     return render(request, "taxonomy_ui/upload.html", context)
 
@@ -163,15 +191,18 @@ def download_full_output(request, filename):
     if not file_path.exists():
         return HttpResponse("Snapshot file not found. Please upload and process first.", status=404)
 
-    with open(file_path, "rb") as f:
-        data = f.read()
+    try:
+        with open(file_path, "rb") as f:
+            data = f.read()
 
-    resp = HttpResponse(
-        data,
-        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-    resp["Content-Disposition"] = f'attachment; filename="{filename}"'
-    return resp
+        resp = HttpResponse(
+            data,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return resp
+    except Exception as e:
+        return HttpResponse(f"Error downloading file: {e}", status=500)
 
 
 # --------------------------------------------------------------------
@@ -247,3 +278,79 @@ def run_stage1_refresh(request):
             },
             status=500,
         )
+
+
+# --------------------------------------------------------------------
+# DEBUG ENDPOINTS
+# --------------------------------------------------------------------
+def debug_upload(request):
+    """Debug endpoint to check file upload handling"""
+    if request.method == 'POST' and request.FILES:
+        info = {
+            'file_count': len(request.FILES),
+            'file_names': list(request.FILES.keys()),
+            'files_info': [],
+            'render_info': {
+                'RENDER_EXTERNAL_HOSTNAME': os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'Not set'),
+                'DATABASE_URL_set': 'DATABASE_URL' in os.environ,
+                'DEBUG': os.environ.get('DJANGO_DEBUG', 'Not set'),
+            }
+        }
+        
+        for name, file in request.FILES.items():
+            file_info = {
+                'name': file.name,
+                'size': file.size,
+                'content_type': file.content_type,
+                'readable': file.readable(),
+                'ext': os.path.splitext(file.name)[1].lower()
+            }
+            
+            # Read a bit to test
+            try:
+                content = file.read(100)
+                file_info['preview'] = str(content[:50])
+                file.seek(0)  # Reset for processing
+            except Exception as e:
+                file_info['error'] = str(e)
+            
+            info['files_info'].append(file_info)
+        
+        return JsonResponse(info)
+    
+    return HttpResponse("""
+    <html>
+    <body>
+        <h2>Debug File Upload</h2>
+        <form method="post" enctype="multipart/form-data">
+            <input type="file" name="test" multiple>
+            <button type="submit">Test Upload</button>
+        </form>
+        <hr>
+        <h3>Environment Info:</h3>
+        <ul>
+            <li>RENDER_EXTERNAL_HOSTNAME: {hostname}</li>
+            <li>DATABASE_URL set: {db_set}</li>
+            <li>DJANGO_DEBUG: {debug}</li>
+        </ul>
+    </body>
+    </html>
+    """.format(
+        hostname=os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'Not set'),
+        db_set='Yes' if 'DATABASE_URL' in os.environ else 'No',
+        debug=os.environ.get('DJANGO_DEBUG', 'Not set')
+    ))
+
+
+def health_check(request):
+    """Simple health check endpoint for Render"""
+    return JsonResponse({
+        'status': 'ok',
+        'timestamp': pd.Timestamp.now().isoformat(),
+        'database': 'connected' if PartMaster.objects.exists() else 'empty',
+        'output_dir_exists': OUTPUT_DIR.exists(),
+        'requirements_installed': {
+            'pandas': True,  # If we got here, pandas is installed
+            'pdfplumber': __import__('pdfplumber').__version__ if 'pdfplumber' in globals() else 'Not loaded'
+        }
+    })

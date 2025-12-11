@@ -1,19 +1,24 @@
-Django==5.2.9
-gunicorn
-dj-database-url
-whitenoise
-psycopg2-binary
+# Core Django
+Django==4.2.0
+gunicorn==21.2.0
+psycopg2-binary==2.9.9
+whitenoise==6.6.0
+dj-database-url==2.1.0
 
-pandas
-numpy
-openpyxl
-xlsxwriter
-pytesseract
-Pillow
-opencv-python
-pdf2image
-PyMuPDF
-tqdm
-python-dateutil
-pdfplumber==0.11.8
+# Data Processing
+pandas==2.1.0
+openpyxl==3.1.2
+xlrd==2.0.1  # For .xls files
 
+# PDF Processing (CRITICAL - must be included)
+pdfplumber==0.10.3
+pdfminer.six==20221105
+Pillow==10.1.0
+
+# Cloudinary for file storage (if you decide to use it later)
+django-cloudinary-storage==0.3.0
+cloudinary==1.36.0
+
+# Optional utilities
+numpy==1.24.0
+python-magic==0.4.27

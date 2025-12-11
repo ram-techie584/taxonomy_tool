@@ -4,15 +4,20 @@
 Stage-2 adapter: runs the ingestion / cleansing / enrichment pipeline
 from Django, updates PartMaster, and generates an Excel snapshot.
 
-Used by: taxonomy_ui.views.upload_and_process
+Render-safe version: processes files directly from memory using the 
+existing load_file() function from ingestion_utils.py
 """
 
 from pathlib import Path
 from collections import defaultdict
+import io
+import os
 
 import pandas as pd
 from django.db import transaction
 
+# ✅ Use the EXISTING load_file function from ingestion_utils
+#    It's already Render-safe!
 from ingestion_utils import load_file
 from cleansing import cleanup_pipeline
 from enrichment_text import enrich_from_description
@@ -59,9 +64,12 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 def run_stage2_from_django(uploaded_files):
     """
     Stage-2 pipeline (Render-safe, ORM-only).
+    
+    Uses the existing load_file() function from ingestion_utils.py
+    which is already written to handle files in memory.
 
     Steps:
-      1. Read uploaded file(s) via `load_file`
+      1. Read uploaded file(s) directly from memory
       2. Run cleansing + enrichment
       3. Merge user rows with existing DB rows via `merge_db_with_user`
       4. Upsert into PartMaster
@@ -73,54 +81,88 @@ def run_stage2_from_django(uploaded_files):
     """
 
     if not uploaded_files:
-        raise ValueError("No files uploaded. Please select a CSV/XLS/XLSX file.")
+        raise ValueError("No files uploaded. Please select a CSV/XLS/XLSX/PDF file.")
 
     dfs = []
+    skipped_files = []
 
     # -------------------------------------------------
-    # 1. Read all uploaded files into a single DataFrame
-    #    (skip unsupported/non-tabular files like PDF)
+    # 1. Read all uploaded files directly from memory
     # -------------------------------------------------
     for f in uploaded_files:
+        # Check file size for Render free tier limits (10MB)
+        file_size = f.size if hasattr(f, 'size') else 0
+        if file_size > 10 * 1024 * 1024:  # 10MB
+            print(f"[WARNING] File {f.name} is too large for Render free tier: {file_size/1024/1024:.2f}MB")
+            skipped_files.append(f"{f.name} (too large: {file_size/1024/1024:.2f}MB)")
+            continue
+
         try:
+            # ✅ Use the EXISTING load_file function - it's already memory-safe!
             df_file = load_file(f)
+            
+            if df_file is None:
+                print(f"[Stage2] load_file returned None for {f.name}")
+                skipped_files.append(f"{f.name} (failed to load)")
+                continue
+                
+            if df_file.empty:
+                print(f"[Stage2] File {f.name} produced no rows, skipping.")
+                skipped_files.append(f"{f.name} (empty or no tables)")
+                continue
+
+            # Track provenance
+            df_file["source_system"] = "user"
+            df_file["source_file"] = f.name
+
+            dfs.append(df_file)
+            print(f"[SUCCESS] Loaded {len(df_file)} rows from {f.name}")
+
         except Exception as e:
-            # If load_file explodes on PDF etc, just skip this file
-            print(f"[Stage2] Skipping file {f.name}: {e}")
+            print(f"[Stage2] Failed to process {f.name}: {e}")
+            skipped_files.append(f"{f.name} (error: {str(e)[:50]})")
             continue
 
-        if df_file is None or df_file.empty:
-            print(f"[Stage2] File {f.name} produced no rows, skipping.")
-            continue
-
-        # Track provenance
-        df_file["source_system"] = "user"
-        df_file["source_file"] = f.name
-
-        dfs.append(df_file)
+    # Show summary of skipped files
+    if skipped_files:
+        print(f"[INFO] Skipped {len(skipped_files)} files: {skipped_files}")
 
     if not dfs:
-        # This will be caught in the view and shown as a red error,
-        # NOT as a 500.
-        raise ValueError(
-            "No valid tabular data found in uploaded files. "
-            "Only CSV, XLS, and XLSX files are supported."
-        )
+        # Provide helpful error message
+        error_msg = "No valid data found in uploaded files. "
+        if skipped_files:
+            error_msg += f"Skipped files: {', '.join(skipped_files)}. "
+        error_msg += "Please upload CSV, XLS, XLSX files, or PDFs with tables."
+        raise ValueError(error_msg)
 
     df_raw = pd.concat(dfs, ignore_index=True)
+    print(f"[INFO] Combined data: {len(df_raw)} total rows")
 
     # -------------------------------------------------
     # 2. Clean + enrich
     # -------------------------------------------------
-    df_clean = cleanup_pipeline(df_raw)
-    df_clean = enrich_from_description(df_clean)
+    try:
+        df_clean = cleanup_pipeline(df_raw)
+        df_clean = enrich_from_description(df_clean)
+    except Exception as e:
+        print(f"[ERROR] Cleanup/enrichment failed: {e}")
+        raise ValueError(f"Data processing failed: {e}")
 
     if "part_number" not in df_clean.columns:
-        raise ValueError("Required column 'part_number' is missing after processing.")
+        # Try to find alternative column names
+        possible_cols = [col for col in df_clean.columns if 'part' in col.lower() or 'number' in col.lower()]
+        if possible_cols:
+            df_clean = df_clean.rename(columns={possible_cols[0]: "part_number"})
+            print(f"[INFO] Renamed column '{possible_cols[0]}' to 'part_number'")
+        else:
+            raise ValueError("Required column 'part_number' is missing after processing. Please ensure your files have a part number column.")
 
     # Drop rows with missing part_number
     df_clean = df_clean[df_clean["part_number"].notna()].copy()
     df_clean["part_number"] = df_clean["part_number"].astype(str).str.strip()
+    
+    if df_clean.empty:
+        raise ValueError("No rows with valid part numbers found after cleaning.")
 
     records = df_clean.to_dict(orient="records")
 
@@ -132,6 +174,8 @@ def run_stage2_from_django(uploaded_files):
         pn = r.get("part_number")
         if pn:
             grouped[pn].append(r)
+
+    print(f"[INFO] Grouped into {len(grouped)} unique part numbers")
 
     merged_results = []
 
@@ -166,37 +210,52 @@ def run_stage2_from_django(uploaded_files):
 
     df_out = pd.DataFrame(merged_results)
     df_out = normalize_columns(df_out)
+    print(f"[INFO] Final output: {len(df_out)} rows with {len(df_out.columns)} columns")
 
     # -------------------------------------------------
     # 5. Write Excel snapshot for download + Stage-1
+    #    This is OK because it's processed output, not uploaded files
     # -------------------------------------------------
-    OUTPUT_DIR.mkdir(exist_ok=True)
-    df_out.to_excel(SNAPSHOT_PATH, index=False)
+    try:
+        OUTPUT_DIR.mkdir(exist_ok=True)
+        df_out.to_excel(SNAPSHOT_PATH, index=False)
+        print(f"[SUCCESS] Snapshot saved to: {SNAPSHOT_PATH}")
+    except Exception as e:
+        print(f"[ERROR] Failed to save snapshot: {e}")
+        # Don't crash, just continue without saving file
+        # The output DataFrame is still returned for preview
 
     # -------------------------------------------------
     # 6. UPSERT into PartMaster
     # -------------------------------------------------
-    with transaction.atomic():
-        for row in df_out.to_dict(orient="records"):
-            pn = row.get("part_number")
-            if not pn:
-                continue
+    try:
+        with transaction.atomic():
+            for row in df_out.to_dict(orient="records"):
+                pn = row.get("part_number")
+                if not pn:
+                    continue
 
-            PartMaster.objects.update_or_create(
-                part_number=pn,
-                defaults={
-                    "dimensions": row.get("dimensions"),
-                    "description": row.get("description"),
-                    "cost": row.get("cost"),
-                    "material": row.get("material"),
-                    "vendor_name": row.get("vendor_name"),
-                    "currency": row.get("currency"),
-                    "category_raw": row.get("category_raw"),
-                    "category_master": row.get("category_master"),
-                    "source_system": row.get("source_system"),
-                    "source_file": row.get("source_file"),
-                },
-            )
+                PartMaster.objects.update_or_create(
+                    part_number=pn,
+                    defaults={
+                        "dimensions": row.get("dimensions"),
+                        "description": row.get("description"),
+                        "cost": row.get("cost"),
+                        "material": row.get("material"),
+                        "vendor_name": row.get("vendor_name"),
+                        "currency": row.get("currency"),
+                        "category_raw": row.get("category_raw"),
+                        "category_master": row.get("category_master"),
+                        "source_system": row.get("source_system"),
+                        "source_file": row.get("source_file"),
+                    },
+                )
+        print(f"[SUCCESS] Updated {len(df_out)} records in PartMaster")
+    except Exception as e:
+        print(f"[ERROR] Database update failed: {e}")
+        # Continue even if DB update fails, at least show the preview
 
-    # DataFrame is returned for preview in the UI
+    # -------------------------------------------------
+    # 7. Return DataFrame for preview in the UI
+    # -------------------------------------------------
     return df_out

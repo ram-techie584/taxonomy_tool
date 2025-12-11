@@ -1,15 +1,26 @@
 services:
   - type: web
-    name: taxonomy-portal
+    name: taxonomy-tool
     env: python
     plan: free
     buildCommand: |
       pip install -r requirements.txt
       python manage.py collectstatic --noinput
-      python manage.py migrate
-    startCommand: gunicorn taxonomy_portal.wsgi:application
+    startCommand: gunicorn taxonomy_tool.wsgi:application
     envVars:
       - key: DJANGO_SETTINGS_MODULE
-        value: taxonomy_portal.settings
+        value: taxonomy_tool.settings
       - key: PYTHON_VERSION
-        value: 3.11
+        value: 3.11.0
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: taxonomy-db           # Your Render PostgreSQL name
+          property: connectionString
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false                   # You'll add this in Render dashboard
+      - key: CLOUDINARY_API_KEY
+        sync: false                   # You'll add this in Render dashboard  
+      - key: CLOUDINARY_API_SECRET
+        sync: false                   # You'll add this in Render dashboard

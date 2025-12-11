@@ -1,7 +1,6 @@
 """
 Django settings for taxonomy_portal project.
-Production-ready for Render deployment.
-SQLite locally + PostgreSQL on Render.
+Production-ready for Render deployment with Cloudinary for file storage.
 """
 
 from pathlib import Path
@@ -39,7 +38,7 @@ else:
     CSRF_TRUSTED_ORIGINS = []
 
 # --------------------------------------------------
-# APPLICATIONS
+# APPLICATIONS (ADD CLOUDINARY)
 # --------------------------------------------------
 
 INSTALLED_APPS = [
@@ -49,10 +48,39 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-
+    
+    # ✅ Cloudinary Storage (MUST BE BEFORE YOUR APP)
+    "cloudinary_storage",
+    "cloudinary",
+    
     # ✅ Your app
     "taxonomy_ui",
 ]
+
+# --------------------------------------------------
+# CLOUDINARY CONFIGURATION (FOR FILE UPLOADS)
+# --------------------------------------------------
+
+CLOUDINARY_STORAGE = {
+    'CLOUD_NAME': os.environ.get('CLOUDINARY_CLOUD_NAME', ''),
+    'API_KEY': os.environ.get('CLOUDINARY_API_KEY', ''),
+    'API_SECRET': os.environ.get('CLOUDINARY_API_SECRET', ''),
+}
+
+# ✅ Set Cloudinary as default file storage
+DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
+
+# --------------------------------------------------
+# FILE HANDLING SETTINGS
+# --------------------------------------------------
+
+# ⚠️ REMOVE or COMMENT OUT local media settings:
+# MEDIA_URL = '/media/'  # Comment this out
+# MEDIA_ROOT = os.path.join(BASE_DIR, 'media')  # Comment this out
+
+# Maximum upload size (25MB for PDFs)
+DATA_UPLOAD_MAX_MEMORY_SIZE = 26214400  # 25MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 26214400
 
 # --------------------------------------------------
 # MIDDLEWARE
@@ -97,10 +125,8 @@ TEMPLATES = [
 ]
 
 # --------------------------------------------------
-# DATABASE CONFIGURATION (✅ FIXED)
+# DATABASE CONFIGURATION
 # --------------------------------------------------
-# ✔ PostgreSQL on Render
-# ✔ SQLite locally (NO postgres needed)
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -162,3 +188,29 @@ STATICFILES_STORAGE = (
 # --------------------------------------------------
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# Add to settings.py - Logging configuration
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO',
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}
+
+# File upload settings
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
