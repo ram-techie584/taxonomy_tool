@@ -1,88 +1,112 @@
 # background_stage1.py
 """
-Stage-1 (ORM-based, production safe)
+Stage 1 loader for Render + local.
 
-✅ No Excel
-✅ No filesystem dependency
-✅ No psycopg2
-✅ DB is the master
+Reads output/stage1_master_snapshot.xlsx and populates the PartMaster table
+using Django ORM (Postgres on Render, SQLite locally).
 """
 
 import os
-import pandas as pd
-from collections import defaultdict
+from pathlib import Path
 
+import pandas as pd
+
+# --------------------------------------------------------------------
+# 1. Bootstrap Django
+# --------------------------------------------------------------------
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "taxonomy_portal.settings")
 
-import django
+import django  # noqa: E402
 django.setup()
 
-from django.db import transaction
-from taxonomy_ui.models import PartMaster
-
-from ingestion_utils import load_file
-from cleansing import cleanup_pipeline
-from enrichment_text import enrich_from_description
+from django.db import transaction  # noqa: E402
+from taxonomy_ui.models import PartMaster  # noqa: E402
 
 
-def run_stage1_from_sources(source_files):
-    """
-    source_files = list of Excel / CSV / PDF / API dataframes
-    """
+# --------------------------------------------------------------------
+# 2. Paths
+# --------------------------------------------------------------------
+BASE_DIR = Path(__file__).resolve().parent
+SNAPSHOT_PATH = BASE_DIR / "output" / "stage1_master_snapshot.xlsx"
 
-    dfs = []
 
-    for f in source_files:
-        df = load_file(f)
-        if df is None or df.empty:
-            continue
+# --------------------------------------------------------------------
+# 3. Helpers
+# --------------------------------------------------------------------
+def safe_val(val):
+    """Convert pandas NaN to None (Postgres safe)."""
+    if pd.isna(val):
+        return None
+    return val
 
-        df["source_system"] = "stage1"
-        df["source_file"] = getattr(f, "name", "system")
-        dfs.append(df)
 
-    if not dfs:
-        print("[Stage1] ❌ No valid source data")
+# --------------------------------------------------------------------
+# 4. Main Loader
+# --------------------------------------------------------------------
+def load_part_master_from_snapshot():
+    if not SNAPSHOT_PATH.exists():
+        print(f"[Stage1] ❌ Snapshot file not found: {SNAPSHOT_PATH}")
         return
 
-    # Combine all sources
-    df_raw = pd.concat(dfs, ignore_index=True)
+    print(f"[Stage1] ✅ Loading snapshot from: {SNAPSHOT_PATH}")
 
-    # Clean & enrich
-    df_clean = cleanup_pipeline(df_raw)
-    df_clean = enrich_from_description(df_clean)
+    df = pd.read_excel(SNAPSHOT_PATH)
 
-    df_clean = df_clean[df_clean["part_number"].notna()].copy()
-    df_clean["part_number"] = df_clean["part_number"].astype(str).str.strip()
+    if df.empty:
+        print("[Stage1] ⚠️ Snapshot is empty. No rows to load.")
+        return
 
-    records = df_clean.to_dict(orient="records")
+    print(f"[Stage1] Rows in snapshot: {len(df)}")
 
-    grouped = defaultdict(list)
-    for r in records:
-        grouped[r["part_number"]].append(r)
+    required_cols = [
+        "part_number",
+        "dimensions",
+        "description",
+        "cost",
+        "material",
+        "vendor_name",
+        "currency",
+        "category_raw",
+        "category_master",
+        "source_system",
+        "source_file",
+    ]
+
+    for col in required_cols:
+        if col not in df.columns:
+            df[col] = None
+
+    objects = []
+
+    for _, row in df.iterrows():
+        objects.append(
+            PartMaster(
+                part_number=str(safe_val(row.get("part_number")) or "").strip(),
+                dimensions=safe_val(row.get("dimensions")),
+                description=safe_val(row.get("description")),
+                cost=str(safe_val(row.get("cost"))) if safe_val(row.get("cost")) else None,
+                material=safe_val(row.get("material")),
+                vendor_name=safe_val(row.get("vendor_name")),
+                currency=safe_val(row.get("currency")),
+                category_raw=safe_val(row.get("category_raw")),
+                category_master=safe_val(row.get("category_master")),
+                source_system=safe_val(row.get("source_system")),
+                source_file=safe_val(row.get("source_file")),
+            )
+        )
 
     with transaction.atomic():
-        for pn, rows in grouped.items():
-            row = rows[-1]  # latest wins
+        deleted_count, _ = PartMaster.objects.all().delete()
+        print(f"[Stage1] 🧹 Deleted {deleted_count} existing rows")
 
-            PartMaster.objects.update_or_create(
-                part_number=pn,
-                defaults={
-                    "dimensions": row.get("dimensions"),
-                    "description": row.get("description"),
-                    "cost": row.get("cost"),
-                    "material": row.get("material"),
-                    "vendor_name": row.get("vendor_name"),
-                    "currency": row.get("currency"),
-                    "category_raw": row.get("category_raw"),
-                    "category_master": row.get("category_master"),
-                    "source_system": row.get("source_system"),
-                    "source_file": row.get("source_file"),
-                },
-            )
+        PartMaster.objects.bulk_create(objects, batch_size=500)
+        print(f"[Stage1] ✅ Inserted {len(objects)} rows into part_master")
 
-    print(f"[Stage1] ✅ Loaded {len(grouped)} records into DB")
+    print("[Stage1] 🎉 Stage-1 completed successfully")
 
 
+# --------------------------------------------------------------------
+# 5. Entry Point
+# --------------------------------------------------------------------
 if __name__ == "__main__":
-    print("[Stage1] ✅ ORM-based Stage-1 ready")
+    load_part_master_from_snapshot()

@@ -10,6 +10,7 @@ from cleansing import cleanup_pipeline
 from enrichment_text import enrich_from_description
 from merge_logic import merge_db_with_user
 
+# 👇 use dynamic-column DB helpers
 from db import fetch_part_by_number, upsert_part_master
 
 
@@ -17,9 +18,9 @@ def run_stage2_from_django(uploaded_files):
     """
     Stage-2 pipeline (Render safe, dynamic columns)
 
-    ✅ Safe part_number handling
-    ✅ Guaranteed DB commit
-    ✅ Dynamic column support
+    ✅ Uses Django-managed connection via db.py
+    ✅ No localhost/DB_CONFIG
+    ✅ Dynamic columns in part_master
     """
 
     dfs = []
@@ -28,12 +29,12 @@ def run_stage2_from_django(uploaded_files):
     # 1. Read uploaded files
     # -------------------------------------------------
     for f in uploaded_files:
-        df = load_file(f)
+        df = load_file(f)  # must support file-like object
         if df is None or df.empty:
             continue
 
         df["source_system"] = "user"
-        df["source_file"] = getattr(f, "name", "uploaded")
+        df["source_file"] = f.name
         dfs.append(df)
 
     if not dfs:
@@ -47,30 +48,14 @@ def run_stage2_from_django(uploaded_files):
     df_clean = cleanup_pipeline(df_raw)
     df_clean = enrich_from_description(df_clean)
 
-    # -------------------------------------------------
-    # 3. Validate part_number column
-    # -------------------------------------------------
-    if "part_number" not in df_clean.columns:
-        raise ValueError("part_number column missing after cleanup")
-
-    df_clean["part_number"] = (
-        df_clean["part_number"]
-        .astype(str)
-        .str.strip()
-    )
-
-    df_clean = df_clean[
-        (df_clean["part_number"] != "") &
-        (df_clean["part_number"].str.lower() != "nan")
-    ].copy()
-
-    if df_clean.empty:
-        raise ValueError("No valid part_number values after cleanup")
+    # keep only rows with part_number
+    df_clean = df_clean[df_clean["part_number"].notna()].copy()
+    df_clean["part_number"] = df_clean["part_number"].astype(str).str.strip()
 
     records = df_clean.to_dict(orient="records")
 
     # -------------------------------------------------
-    # 4. Group by part_number
+    # 3. Group by part_number
     # -------------------------------------------------
     grouped = defaultdict(list)
     for r in records:
@@ -78,34 +63,24 @@ def run_stage2_from_django(uploaded_files):
         if pn:
             grouped[pn].append(r)
 
-    if not grouped:
-        raise ValueError("No grouped records found")
-
     merged_results = []
 
     # -------------------------------------------------
-    # 5. Merge USER data with DB
+    # 4. Merge USER data with DB using db.py
     # -------------------------------------------------
     for pn, user_rows in grouped.items():
+        # dynamic row from DB (may contain more columns than ORM model)
         db_row = fetch_part_by_number(pn)
-
         merged = merge_db_with_user(db_row, user_rows)
-
-        # ✅ HARD GUARANTEE
-        merged["part_number"] = pn
-
         merged_results.append(merged)
 
-    if not merged_results:
-        raise ValueError("Merge produced no output")
-
     # -------------------------------------------------
-    # 6. UPSERT into DB
+    # 5. UPSERT into DB with dynamic columns
     # -------------------------------------------------
     upsert_part_master(merged_results)
 
     # -------------------------------------------------
-    # 7. Generate Excel output
+    # 6. Generate Excel output (all columns from merged_results)
     # -------------------------------------------------
     output_buffer = io.BytesIO()
     df_out = pd.DataFrame(merged_results)
