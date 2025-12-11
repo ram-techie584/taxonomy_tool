@@ -586,8 +586,8 @@ tbody tr:hover {
       <tbody>
         {% for row in df %}
         <tr>
-          {% for c in all_columns %}
-          <td>{{ row|get_item:c|default:"" }}</td>
+          {% for key, value in row.items %}
+          <td>{{ value }}</td>
           {% endfor %}
         </tr>
         {% endfor %}
